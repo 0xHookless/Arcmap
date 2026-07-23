@@ -1273,12 +1273,15 @@ function draw() {
   if (settings.xray) gl.depthMask(true);
 
   // Live player-stream overlay (Telementry → Cloudflare Tunnel → this viewer).
-  // We invoke it between the scene depth write and postFX so bones are
-  // occluded by geometry when `?xray` isn't set, and so postFX (FXAA,
-  // bloom, etc.) is applied on top of them.
+  // We invoke it between the scene depth write and postFX so postFX (FXAA,
+  // bloom, etc.) is applied on top of it. depthTest is always true here —
+  // the map's own X-ray toggle (settings.xray) only affects map geometry
+  // opacity above, it does NOT control whether streamed players are
+  // occluded by walls. stream.js decides that itself, based solely on
+  // whether the server has tagged the current frame as simulated test
+  // data, so occlusion-bypass can never be switched on for a real match.
   const viewProj = mat4mul(projection, view);
-  const xray = settings.xray || (new URLSearchParams(location.search).get("xray") === "1");
-  window.renderLiveStreamOverlay?.(gl, viewProj, { depthTest: !xray }, {
+  window.renderLiveStreamOverlay?.(gl, viewProj, { depthTest: true }, {
     positionScale: scene.positionScale,
     center: scene.center,
     scale: scene.scale,
