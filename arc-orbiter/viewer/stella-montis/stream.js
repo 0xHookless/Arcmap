@@ -54,6 +54,13 @@
   let hidden = false;
   let frameCount = 0;
 
+  // True only when the publisher reports this frame came from its
+  // fabricated test-skeleton simulation (no real game attached on the
+  // Telementry side), never for real player data. x-ray rendering and the
+  // off-screen locator arrows below are gated on this flag specifically so
+  // they can never activate against a real match.
+  let simulatedSource = false;
+
   function setConnState(s) {
     if (s === connState) return;
     connState = s;
@@ -166,6 +173,7 @@
     latestTick = payload.tick;
     lastFrameAt = performance.now();
     frameCount++;
+    simulatedSource = payload.sim === 1 || payload.sim === true;
 
     players.clear();
     const list = Array.isArray(payload.players) ? payload.players : [];
@@ -471,7 +479,13 @@ void main() {
     }
     gl.uniform1f(uPointSize, 5.0);
 
-    if (pendingOpts.depthTest) {
+    // Simulated test data renders through walls (depth test off) so the
+    // test-skeleton phase is visible and verifiable regardless of where the
+    // camera is standing. Real player data always keeps normal depth
+    // testing — this branch can only go the x-ray route when the server
+    // has told us (via the "sim" flag on every frame) that this is
+    // fabricated data, never for an actual match.
+    if (pendingOpts.depthTest && !simulatedSource) {
       gl.enable(gl.DEPTH_TEST);
     } else {
       gl.disable(gl.DEPTH_TEST);
@@ -490,7 +504,113 @@ void main() {
     if (prevCull) gl.enable(gl.CULL_FACE); else gl.disable(gl.CULL_FACE);
     gl.bindVertexArray(prevVao);
     gl.useProgram(prevProgram);
+
+    drawLocatorArrows();
   };
+
+  // --- Off-screen locator arrows (simulated test data only) ---------------
+  // QA aid for the test-skeleton phase: draws an edge-of-screen arrow toward
+  // any simulated player who isn't currently in view, so it's possible to
+  // confirm data is actually streaming without having to know exactly where
+  // the fake rig is standing. Gated on simulatedSource — the same
+  // server-reported flag that governs x-ray above — so this can never point
+  // at a real player.
+  let locatorCanvas = null;
+  let locatorCtx = null;
+
+  function ensureLocatorCanvas() {
+    if (locatorCanvas) return;
+    locatorCanvas = document.createElement("canvas");
+    locatorCanvas.id = "sim-locator";
+    locatorCanvas.style.cssText =
+      "position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;z-index:5;";
+    document.body.appendChild(locatorCanvas);
+    locatorCtx = locatorCanvas.getContext("2d");
+  }
+
+  // Apply the same affine world transform the shader uses for aPos
+  // (uWorldTransform: position-scale, then re-center, then world-scale).
+  function applyWorldTransformCPU(m, x, y, z) {
+    return [
+      m[0] * x + m[4] * y + m[8] * z + m[12],
+      m[1] * x + m[5] * y + m[9] * z + m[13],
+      m[2] * x + m[6] * y + m[10] * z + m[14],
+    ];
+  }
+
+  // Project an already-world-transformed point through the view-projection
+  // matrix (column-major, matches how it's uploaded via uniformMatrix4fv
+  // above). Returns null if behind the camera.
+  function projectToScreen(x, y, z, m, vw, vh) {
+    const cx = m[0] * x + m[4] * y + m[8] * z + m[12];
+    const cy = m[1] * x + m[5] * y + m[9] * z + m[13];
+    const cw = m[3] * x + m[7] * y + m[11] * z + m[15];
+    if (cw <= 0.0001) return null;
+    const ndcX = cx / cw, ndcY = cy / cw;
+    return {
+      x: (ndcX * 0.5 + 0.5) * vw,
+      y: (1 - (ndcY * 0.5 + 0.5)) * vh,
+      onscreen: ndcX >= -1 && ndcX <= 1 && ndcY >= -1 && ndcY <= 1,
+    };
+  }
+
+  function drawLocatorArrows() {
+    if (!locatorCanvas && !simulatedSource) return; // nothing drawn, nothing to clear
+    ensureLocatorCanvas();
+
+    const vw = window.innerWidth, vh = window.innerHeight;
+    if (locatorCanvas.width !== vw || locatorCanvas.height !== vh) {
+      locatorCanvas.width = vw;
+      locatorCanvas.height = vh;
+    }
+    locatorCtx.clearRect(0, 0, vw, vh);
+
+    if (!simulatedSource || players.size === 0 || !pendingViewProj || !pendingSceneState) return;
+
+    const worldTransform = buildWorldTransform(
+      pendingSceneState.positionScale,
+      pendingSceneState.center,
+      pendingSceneState.scale
+    );
+
+    const cx = vw / 2, cy = vh / 2;
+    const margin = 28;
+
+    for (const p of players.values()) {
+      const hi = BONE_INDEX.Head;
+      const wx = p.bones[hi * 3 + 0], wy = p.bones[hi * 3 + 1], wz = p.bones[hi * 3 + 2];
+      if (!isFinite(wx)) continue;
+
+      const [tx, ty, tz] = applyWorldTransformCPU(worldTransform, wx, wy, wz);
+      const proj = projectToScreen(tx, ty, tz, pendingViewProj, vw, vh);
+      if (!proj || proj.onscreen) continue; // behind camera, or already visible via the skeleton itself
+
+      let dx = proj.x - cx, dy = proj.y - cy;
+      const len = Math.hypot(dx, dy) || 1;
+      dx /= len; dy /= len;
+      const maxX = cx - margin, maxY = cy - margin;
+      const scale = Math.min(maxX / Math.abs(dx || 1e-6), maxY / Math.abs(dy || 1e-6));
+      const ax = cx + dx * scale, ay = cy + dy * scale;
+      const angle = Math.atan2(dy, dx);
+
+      locatorCtx.save();
+      locatorCtx.translate(ax, ay);
+      locatorCtx.rotate(angle);
+      locatorCtx.fillStyle = "rgba(255,210,60,0.9)";
+      locatorCtx.beginPath();
+      locatorCtx.moveTo(12, 0);
+      locatorCtx.lineTo(-8, 7);
+      locatorCtx.lineTo(-8, -7);
+      locatorCtx.closePath();
+      locatorCtx.fill();
+      locatorCtx.restore();
+
+      locatorCtx.fillStyle = "rgba(255,210,60,0.9)";
+      locatorCtx.font = "11px monospace";
+      locatorCtx.textAlign = "center";
+      locatorCtx.fillText(`${p.name} (sim)`, ax, ay + (dy > 0 ? 22 : -14));
+    }
+  }
 
   // --- Boot ---------------------------------------------------------------
   if (!wsUrl) {
