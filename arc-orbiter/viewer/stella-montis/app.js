@@ -64,6 +64,25 @@ let camera = {
   lookDistance: 12,
 };
 
+// ---- Spectate mode -------------------------------------------------------
+// Locks the freecam onto a connected player (driven by the "Spectate" panel
+// in stream.js) instead of manual WASD flight. Pure camera automation over
+// data already streamed to the viewer either way — no new information
+// exposure, so it applies to real player data the same as simulated test
+// data, unlike x-ray/locator arrows.
+const spectate = { active: false, targetId: null };
+const SPECTATE_FOLLOW_LERP = 4.5; // 1/s -- higher = snappier camera catch-up
+const SPECTATE_OFFSET = [0, 3.5, 3.0]; // above + back, in viewer-space units
+
+window.__telemetrySpectateEnter = (id) => {
+  spectate.active = true;
+  spectate.targetId = id;
+};
+window.__telemetrySpectateExit = () => {
+  spectate.active = false;
+  spectate.targetId = null;
+};
+
 initControls();
 
 if (!manifestHref) {
@@ -782,6 +801,11 @@ function disposeChunk(chunk) {
 }
 
 function updateCamera(dt) {
+  if (spectate.active) {
+    updateSpectateCamera(dt);
+    return;
+  }
+
   const forward = getForward();
   const right = normalize(cross(forward, [0, 1, 0]));
   const up = [0, 1, 0];
@@ -799,6 +823,31 @@ function updateCamera(dt) {
     const boost = keys.has("ShiftLeft") || keys.has("ShiftRight") ? SHIFT_SPEED_MULTIPLIER : 1;
     addScaled(camera.position, movement, (camera.effectiveSpeed * boost * dt) / len);
   }
+}
+
+// Bird's-eye chase cam: hover above and pulled back from the target,
+// always looking straight at them. No player facing-direction is sent over
+// the wire (only bone positions), so this avoids guessing it and just uses
+// a fixed world-space offset.
+function updateSpectateCamera(dt) {
+  const target = window.__telemetryGetSpectateTarget?.(spectate.targetId);
+  if (!target) return; // player not currently in the stream -- hold last position
+
+  const desired = [
+    target.position[0] + SPECTATE_OFFSET[0],
+    target.position[1] + SPECTATE_OFFSET[1],
+    target.position[2] + SPECTATE_OFFSET[2],
+  ];
+
+  const t = 1 - Math.exp(-SPECTATE_FOLLOW_LERP * dt);
+  camera.position[0] += (desired[0] - camera.position[0]) * t;
+  camera.position[1] += (desired[1] - camera.position[1]) * t;
+  camera.position[2] += (desired[2] - camera.position[2]) * t;
+
+  const toTarget = subtract(target.position, camera.position);
+  const horizLen = Math.hypot(toTarget[0], toTarget[2]) || 1e-6;
+  yaw = Math.atan2(toTarget[0], -toTarget[2]);
+  pitch = clamp(Math.atan2(toTarget[1], horizLen), -1.48, 1.48);
 }
 
 function applySceneScale(updateStatus) {

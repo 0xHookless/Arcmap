@@ -211,7 +211,109 @@
       updateHud();
       updateHud._t = lastFrameAt;
     }
+
+    // Auto-exit if the spectated player dropped off the stream.
+    if (spectateActiveId != null && !players.has(spectateActiveId)) {
+      spectateActiveId = null;
+      window.__telemetrySpectateExit?.();
+    }
+    renderSpectatePanel();
   }
+
+  // --- Spectate mode --------------------------------------------------------
+  // Lets the viewer lock the freecam onto a connected player instead of
+  // flying manually. This is plain camera automation over data that's
+  // already streamed to the viewer either way (position, name, team) — it
+  // doesn't bypass occlusion or reveal anything the normal skeleton draw
+  // doesn't already show, so unlike x-ray/locator arrows it applies to real
+  // player data too, same as manually flying the camera to a known
+  // location would.
+  let spectatePanel = null;
+  let spectateActiveId = null;
+
+  function ensureSpectatePanel() {
+    if (spectatePanel) return;
+    spectatePanel = document.createElement("div");
+    spectatePanel.id = "telemetry-spectate";
+    spectatePanel.style.cssText = [
+      "position:fixed", "top:12px", "right:12px", "z-index:6",
+      "background:rgba(10,12,16,0.82)", "color:#f2f4f8",
+      "font:12px/1.4 ui-sans-serif,system-ui,sans-serif",
+      "border:1px solid rgba(255,255,255,0.14)", "border-radius:8px",
+      "padding:8px 10px", "min-width:190px", "max-height:40vh",
+      "overflow-y:auto", "pointer-events:auto",
+    ].join(";");
+    document.body.appendChild(spectatePanel);
+  }
+
+  function renderSpectatePanel() {
+    if (!wsUrl) return;
+    ensureSpectatePanel();
+
+    const list = Array.from(players.values());
+    const rows = list.map((p) => {
+      const active = spectateActiveId === p.id;
+      const label = `${p.name}${p.bot ? " [bot]" : ""}`;
+      return `<div data-pid="${p.id}" style="display:flex;justify-content:space-between;` +
+        `align-items:center;gap:8px;padding:3px 2px;cursor:pointer;border-radius:4px;` +
+        `${active ? "color:#7CD98A;font-weight:600;background:rgba(124,217,138,0.12);" : ""}">` +
+        `<span>${escapeHtml(label)}</span>` +
+        `<span style="opacity:0.7;">${active ? "● spectating" : "spectate"}</span></div>`;
+    }).join("");
+
+    spectatePanel.innerHTML =
+      `<div style="font-weight:600;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;">` +
+      `<span>Spectate${simulatedSource ? " (test rig)" : ""}</span>` +
+      (spectateActiveId != null
+        ? `<span id="telemetry-spectate-exit" style="cursor:pointer;opacity:0.75;">exit ✕</span>`
+        : "") +
+      `</div>` +
+      (list.length === 0
+        ? `<div style="opacity:0.6;">No players streaming</div>`
+        : rows);
+
+    spectatePanel.querySelectorAll("[data-pid]").forEach((el) => {
+      el.addEventListener("click", () => {
+        const id = Number(el.getAttribute("data-pid"));
+        spectateActiveId = id;
+        window.__telemetrySpectateEnter?.(id);
+        renderSpectatePanel();
+      });
+    });
+    const exitEl = spectatePanel.querySelector("#telemetry-spectate-exit");
+    if (exitEl) {
+      exitEl.addEventListener("click", () => {
+        spectateActiveId = null;
+        window.__telemetrySpectateExit?.();
+        renderSpectatePanel();
+      });
+    }
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
+  }
+
+  // Called by app.js's camera update each frame while spectating. Returns
+  // the target's root-bone position already run through the same world
+  // transform (positionScale/center/scale) the skeleton draw uses, so it's
+  // directly usable as a camera.position-space point — or null if the
+  // target isn't currently available (dropped frame, disconnected, etc.).
+  window.__telemetryGetSpectateTarget = function (id) {
+    if (id == null || !pendingSceneState) return null;
+    const p = players.get(id);
+    if (!p) return null;
+    const ri = BONE_INDEX.Root;
+    const wx = p.bones[ri * 3 + 0], wy = p.bones[ri * 3 + 1], wz = p.bones[ri * 3 + 2];
+    if (!isFinite(wx)) return null;
+    const worldTransform = buildWorldTransform(
+      pendingSceneState.positionScale, pendingSceneState.center, pendingSceneState.scale
+    );
+    const [tx, ty, tz] = applyWorldTransformCPU(worldTransform, wx, wy, wz);
+    return { position: [tx, ty, tz] };
+  };
 
   // --- Stale reaper -------------------------------------------------------
   // A player is considered stale after 1 s of silence and is removed after
