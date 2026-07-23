@@ -235,13 +235,18 @@
     if (spectatePanel) return;
     spectatePanel = document.createElement("div");
     spectatePanel.id = "telemetry-spectate";
+    // Bottom-left is the only corner the existing HUD doesn't already use
+    // (#hud top-left, #axis-gizmo + #telemetry top-right, #lock
+    // bottom-right) — and z-index:25 clears the highest existing HUD value
+    // (#lock at 21) so this can't render invisibly behind another panel.
     spectatePanel.style.cssText = [
-      "position:fixed", "top:12px", "right:12px", "z-index:6",
-      "background:rgba(10,12,16,0.82)", "color:#f2f4f8",
+      "position:fixed", "bottom:16px", "left:16px", "z-index:25",
+      "background:rgba(10,12,16,0.86)", "color:#f2f4f8",
       "font:12px/1.4 ui-sans-serif,system-ui,sans-serif",
-      "border:1px solid rgba(255,255,255,0.14)", "border-radius:8px",
-      "padding:8px 10px", "min-width:190px", "max-height:40vh",
-      "overflow-y:auto", "pointer-events:auto",
+      "border:1px solid rgba(255,255,255,0.18)", "border-radius:8px",
+      "box-shadow:0 16px 40px rgba(0,0,0,0.28)", "backdrop-filter:blur(12px)",
+      "padding:8px 10px", "min-width:190px", "max-width:min(260px, calc(100vw - 32px))",
+      "max-height:40vh", "overflow-y:auto", "pointer-events:auto",
     ].join(";");
     document.body.appendChild(spectatePanel);
   }
@@ -624,8 +629,10 @@ void main() {
     if (locatorCanvas) return;
     locatorCanvas = document.createElement("canvas");
     locatorCanvas.id = "sim-locator";
+    // z-index above the existing HUD (#lock tops out at 21) so arrows near
+    // a HUD box's screen position still draw on top of it, not behind.
     locatorCanvas.style.cssText =
-      "position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;z-index:5;";
+      "position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;z-index:25;";
     document.body.appendChild(locatorCanvas);
     locatorCtx = locatorCanvas.getContext("2d");
   }
